@@ -134,6 +134,20 @@ textarea:focus{outline:none;border-color:#2563EB}
 </head>
 <body>
 
+<div id="loginmask" style="display:none;position:fixed;inset:0;background:#1A1D23;z-index:999;align-items:center;justify-content:center;padding:16px">
+  <div style="background:#fff;border-radius:14px;padding:28px;width:100%;max-width:360px;box-shadow:0 20px 60px rgba(0,0,0,.4)">
+    <div style="font-size:18px;font-weight:700;margin-bottom:4px">SKET マッチングツール</div>
+    <div style="font-size:12px;color:#6B7280;margin-bottom:18px">ログインしてください</div>
+    <input class="si" id="lgid" placeholder="ログインID" autocomplete="username" style="margin-bottom:8px">
+    <input class="si" id="lgpw" type="password" placeholder="パスワード" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+    <div id="loginerr" style="color:#DC2626;font-size:12px;margin-top:8px;min-height:16px;line-height:1.5"></div>
+    <button class="btn btn-d" id="lgbtn" style="width:100%;padding:10px;font-size:14px;margin-top:4px" onclick="doLogin()">ログイン</button>
+    <div style="font-size:11px;color:#9CA3AF;margin-top:16px;line-height:1.6">IDが分からない場合、パスワードを忘れた場合は管理者にご連絡ください。</div>
+  </div>
+</div>
+
+<div id="appwrap" style="display:none">
+
 <div class="hdr">
   <div><div class="hdr-title">SKET マッチングツール</div><div class="hdr-sub">SES案件 x 要員 自動マッチング</div></div>
   <div class="hdr-stats">
@@ -141,7 +155,9 @@ textarea:focus{outline:none;border-color:#2563EB}
     <div><div class="sv" id="ss">-</div><div class="sl">要員</div></div>
     <div><div class="sv" id="su">-</div><div class="sl">更新</div></div>
   </div>
+  <span id="meinfo" style="font-size:12px;color:#9CA3AF;margin-left:14px;white-space:nowrap"></span>
   <button class="hbtn" onclick="loadData()">↻ 再読込</button>
+  <button class="hbtn" onclick="doLogout()">ログアウト</button>
 </div>
 
 <div class="tabs">
@@ -152,6 +168,7 @@ textarea:focus{outline:none;border-color:#2563EB}
   <button class="tab" onclick="doTab(this)" data-tab="projs">案件一覧</button>
   <button class="tab" onclick="doTab(this)" data-tab="staffs">要員一覧</button>
   <button class="tab" onclick="doTab(this)" data-tab="paste">情報追加</button>
+  <button class="tab" id="admintab" style="display:none" onclick="doTab(this)" data-tab="admin">⚙ ユーザー管理</button>
 </div>
 
 <div id="tab-hot" class="sec on">
@@ -314,6 +331,29 @@ textarea:focus{outline:none;border-color:#2563EB}
   </div>
 </div>
 
+<div id="tab-admin" class="sec">
+  <div class="pbody">
+    <div class="pbox">
+      <div class="ptitle">ユーザーを追加</div>
+      <div class="pdesc">発行したIDとパスワードを本人にお伝えください。パスワードは暗号化して保存されるため、後から確認することはできません（忘れた場合は下の一覧から再発行します）。</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input class="si" id="nuname" placeholder="氏名（例：山田 太郎）" style="flex:1;min-width:150px">
+        <input class="si" id="nuid" placeholder="ログインID（例：yamada）" style="flex:1;min-width:150px">
+        <input class="si" id="nupw" type="text" placeholder="初期パスワード（8文字以上）" style="flex:1;min-width:170px">
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;margin-top:10px;font-size:12px;color:#6B7280;cursor:pointer">
+        <input type="checkbox" id="nuadmin">このユーザーにも管理者権限を与える（ユーザー管理タブが使えるようになります）
+      </label>
+      <button class="btn btn-d" style="margin-top:10px;padding:8px 20px" onclick="createUser()">ユーザーを追加</button>
+    </div>
+    <div class="pbox">
+      <div class="ptitle">登録済みユーザー</div>
+      <div class="pdesc">取引が終了した相手は「無効にする」を押してください。直ちにログインできなくなり、ログインしたままの端末も次の操作で遮断されます。</div>
+      <div class="lgrid" id="userlist" style="padding:0"></div>
+    </div>
+  </div>
+</div>
+
 <div class="mow" id="detmodal">
   <div class="modal">
     <div class="mh"><div class="mt2" id="detttl">詳細</div><button class="mc" onclick="closeDetModal()">x</button></div>
@@ -326,6 +366,166 @@ textarea:focus{outline:none;border-color:#2563EB}
 // 従業員用ビルド：GAS URLはここに直接埋め込む（設定タブ・APIキー入力は廃止）
 // ★ここをGASデプロイ後のウェブアプリURLに書き換えてください★
 var GAS_URL = 'https://script.google.com/macros/s/AKfycbwxigoqSq5dMELhMCwn3ctcIedIGAis3ymu1lY2SI_qSxWD9PLKjf0hMmYqqKZfXnYmCw/exec';
+// ===========================================================================
+// ログイン認証
+//   ・トークンはlocalStorageに保存し、GAS宛の全リクエストへ自動で付与する
+//     （window.fetch を1箇所で包んでいるので、既存の各fetch呼び出しは無改造）
+//   ・GASが authError を返したら即ログイン画面へ戻す
+//     ＝管理タブでユーザーを「無効」にすると、ログイン中でも次の操作で遮断される
+// ===========================================================================
+var ME = null;
+function getToken()  { try { return localStorage.getItem('sket_token') || ''; } catch (e) { return ''; } }
+function setToken(t) { try { t ? localStorage.setItem('sket_token', t) : localStorage.removeItem('sket_token'); } catch (e) {} }
+
+var _origFetch = window.fetch.bind(window);
+window.fetch = function (url, opts) {
+  if (typeof url === 'string' && GAS_URL && url.indexOf(GAS_URL) === 0) {
+    var tk = getToken();
+    if (opts && opts.body) {
+      try {
+        var b = JSON.parse(opts.body);
+        b.token = tk;
+        opts.body = JSON.stringify(b);
+      } catch (e) {}
+    } else {
+      url += (url.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(tk);
+    }
+    return _origFetch(url, opts).then(function (res) {
+      res.clone().json().then(function (d) {
+        if (d && d.authError) forceLogout(true);
+      }).catch(function () {});
+      return res;
+    });
+  }
+  return _origFetch(url, opts);
+};
+
+function showLogin(msg) {
+  document.getElementById('loginmask').style.display = 'flex';
+  document.getElementById('appwrap').style.display = 'none';
+  document.getElementById('loginerr').textContent = msg || '';
+}
+function forceLogout(expired) {
+  setToken(''); ME = null;
+  showLogin(expired ? 'セッションが切れました。もう一度ログインしてください。' : '');
+}
+function doLogout() {
+  if (getToken()) {
+    fetch(GAS_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ type: 'logout' }) }).catch(function () {});
+  }
+  forceLogout(false);
+}
+function doLogin() {
+  var id = document.getElementById('lgid').value.trim();
+  var pw = document.getElementById('lgpw').value;
+  var btn = document.getElementById('lgbtn');
+  var err = document.getElementById('loginerr');
+  if (!id || !pw) { err.textContent = 'IDとパスワードを入力してください'; return; }
+  btn.disabled = true; btn.textContent = '確認中...'; err.textContent = '';
+  // ログインだけはトークンが無い状態で送るため、包む前のfetchを使う
+  _origFetch(GAS_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ type: 'login', id: id, password: pw }) })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      btn.disabled = false; btn.textContent = 'ログイン';
+      if (!d.success || !d.auth) { err.textContent = d.error || 'ログインに失敗しました'; return; }
+      setToken(d.auth.token); ME = d.auth;
+      document.getElementById('lgpw').value = '';
+      startApp();
+    })
+    .catch(function (e) {
+      btn.disabled = false; btn.textContent = 'ログイン';
+      err.textContent = '通信に失敗しました: ' + e.message;
+    });
+}
+function startApp() {
+  document.getElementById('loginmask').style.display = 'none';
+  document.getElementById('appwrap').style.display = '';
+  document.getElementById('meinfo').textContent = ME ? (ME.name + ' さん') : '';
+  document.getElementById('admintab').style.display = (ME && ME.admin) ? '' : 'none';
+  loadData();
+  if (ME && ME.admin) loadUsers();
+}
+// 起動時：保存済みトークンがまだ有効か確かめてから画面を出す
+function initApp() {
+  if (!getToken()) { showLogin(''); return; }
+  _origFetch(GAS_URL + '?type=me&token=' + encodeURIComponent(getToken()))
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (d && d.success && d.me) { ME = d.me; startApp(); }
+      else forceLogout(false);
+    })
+    .catch(function () { showLogin('サーバーに接続できませんでした。時間をおいて再度お試しください。'); });
+}
+
+// ---------------------------------------------------------------------------
+// ユーザー管理（管理者のみ）
+// ---------------------------------------------------------------------------
+function loadUsers() {
+  var box = document.getElementById('userlist');
+  if (!box) return;
+  box.innerHTML = '<div class="empty"><span class="spin"></span>読み込み中</div>';
+  fetch(GAS_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ type: 'admin_list' }) })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d.success) { box.innerHTML = '<div class="empty">' + (d.error || '取得に失敗しました') + '</div>'; return; }
+      if (!d.users || !d.users.length) { box.innerHTML = '<div class="empty">ユーザーが登録されていません</div>'; return; }
+      box.innerHTML = d.users.map(function (u) {
+        var esc = u.id.replace(/'/g, "\\'");
+        var h = '<div class="card" style="' + (u.active ? '' : 'opacity:.55') + '">';
+        h += '<div class="ct"><div class="cn">' + u.name + (u.admin ? ' <span class="badge bg-p">管理者</span>' : '') + '</div>';
+        h += '<span class="badge" style="' + (u.active ? 'background:#E8F7F2;color:#0F9D6E' : 'background:#FEE2E2;color:#B91C1C') + '">' + (u.active ? '有効' : '無効') + '</span></div>';
+        h += '<div class="meta" style="margin:4px 0">ID: <strong>' + u.id + '</strong></div>';
+        h += '<div class="meta">最終ログイン: <strong>' + (u.last || '未ログイン') + '</strong></div>';
+        h += '<div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">';
+        h += '<button class="btn ' + (u.active ? 'btn-l' : 'btn-d') + '" onclick="toggleUser(\'' + esc + '\',' + (!u.active) + ')">' + (u.active ? '無効にする' : '有効に戻す') + '</button>';
+        h += '<button class="btn btn-l" onclick="resetUserPw(\'' + esc + '\')">パスワード再発行</button>';
+        h += '</div></div>';
+        return h;
+      }).join('');
+    })
+    .catch(function (e) { box.innerHTML = '<div class="empty">エラー: ' + e.message + '</div>'; });
+}
+function toggleUser(id, active) {
+  if (!active && !confirm(id + ' を無効にします。\n\nこのユーザーは直ちにログインできなくなり、\nログイン中の端末も次の操作で遮断されます。\n\nよろしいですか？')) return;
+  fetch(GAS_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ type: 'admin_active', id: id, active: active }) })
+    .then(function (r) { return r.json(); })
+    .then(function (d) { if (!d.success) alert(d.error || '失敗しました'); loadUsers(); })
+    .catch(function (e) { alert('通信に失敗しました: ' + e.message); });
+}
+function resetUserPw(id) {
+  var pw = prompt(id + ' の新しいパスワードを入力してください（8文字以上）\n※変更すると、この方のログイン中の端末はすべて強制ログアウトされます');
+  if (pw === null) return;
+  fetch(GAS_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ type: 'admin_password', id: id, password: pw }) })
+    .then(function (r) { return r.json(); })
+    .then(function (d) { alert(d.success ? 'パスワードを変更しました。本人にお伝えください。' : (d.error || '失敗しました')); })
+    .catch(function (e) { alert('通信に失敗しました: ' + e.message); });
+}
+function createUser() {
+  var name = document.getElementById('nuname').value.trim();
+  var id   = document.getElementById('nuid').value.trim();
+  var pw   = document.getElementById('nupw').value;
+  var adm  = document.getElementById('nuadmin').checked;
+  if (!name || !id || !pw) { alert('氏名・ID・パスワードをすべて入力してください'); return; }
+  fetch(GAS_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ type: 'admin_create', name: name, id: id, password: pw, admin: adm }) })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d.success) { alert(d.error || '失敗しました'); return; }
+      document.getElementById('nuname').value = '';
+      document.getElementById('nuid').value = '';
+      document.getElementById('nupw').value = '';
+      document.getElementById('nuadmin').checked = false;
+      alert('ユーザーを追加しました。\nIDとパスワードを本人にお伝えください。');
+      loadUsers();
+    })
+    .catch(function (e) { alert('通信に失敗しました: ' + e.message); });
+}
+
 var PROJECTS = [], STAFF = [];
 var SCORES = {};   // AI採点結果（key: "案件ID_要員ID" → {s:スコア, r:理由}）深夜バッチが生成
 var BPS = [];      // BPリスト（要員を出せる取引先。GASの buildBPList() が生成）
@@ -1919,7 +2119,8 @@ function confirmAdd() {
   refreshMaxIds(addNextP);
 }
 
-loadData();
+initApp();
 </script>
+</div><!-- /appwrap -->
 </body>
 </html>
